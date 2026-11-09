@@ -1,6 +1,6 @@
 """Umumiy ovozli yordamchi.
 
-Ovozli xabar -> OpenAI Whisper (matnga) -> Claude (javob) -> OpenAI TTS (ovozga).
+Ovozli xabar -> Groq Whisper (matnga, bepul) -> Claude (javob) -> Edge TTS (ovozga, bepul).
 Matnli xabarlarga ham (shaxsiy chatda) javob beradi.
 """
 import io
@@ -11,20 +11,25 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import anthropic
-from openai import AsyncOpenAI
-from telegram import Update
+import edge_tts
+from openai import AsyncOpenAI  # Groq OpenAI bilan mos API beradi
+from telegram import InputFile, Update
 from telegram.constants import ChatAction, ChatType
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 log = logging.getLogger("assistant")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 CLAUDE_EFFORT = os.getenv("CLAUDE_EFFORT", "low")  # suhbat uchun low yetarli va tez
-STT_MODEL = os.getenv("STT_MODEL", "whisper-1")
-TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
+STT_MODEL = os.getenv("STT_MODEL", "whisper-large-v3")
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "uz").strip()  # bo'sh = tilni avtomatik aniqlash
+TTS_VOICE = os.getenv("TTS_VOICE", "uz-UZ-SardorNeural")  # ayol ovozi: uz-UZ-MadinaNeural
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+# Server tomonidagi zaxira model (refusal fallback) faqat shu modellarda ishlaydi
+FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 VOICE_REPLY = os.getenv("VOICE_REPLY", "1") != "0"
 HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "10"))  # chat bo'yicha eslab qolinadigan savol-javoblar
 TZ = ZoneInfo(os.getenv("TZ_NAME", "Asia/Tashkent"))
@@ -47,12 +52,12 @@ Javobing ovozga aylantirilib o'qib beriladi, shuning uchun:
 Bilmagan narsangni o'ylab topma — bilmasligingni ochiq ayt. Real vaqtdagi ma'lumotlarga (ob-havo, valyuta kursi, yangiliklar) kiring yo'q."""
 
 _claude: anthropic.AsyncAnthropic | None = None
-_openai: AsyncOpenAI | None = None
+_groq: AsyncOpenAI | None = None
 _history: dict[int, deque] = defaultdict(lambda: deque(maxlen=HISTORY_TURNS * 2))
 
 
 def enabled() -> bool:
-    return bool(ANTHROPIC_API_KEY and OPENAI_API_KEY)
+    return bool(ANTHROPIC_API_KEY and GROQ_API_KEY)
 
 
 def _allowed(update: Update, admin_ids: set[int]) -> bool:
@@ -63,37 +68,42 @@ def _allowed(update: Update, admin_ids: set[int]) -> bool:
 
 
 async def transcribe(audio: bytes, filename: str) -> str:
-    resp = await _openai.audio.transcriptions.create(
-        model=STT_MODEL, file=(filename, io.BytesIO(audio))
+    kwargs = {"language": STT_LANGUAGE} if STT_LANGUAGE else {}
+    resp = await _groq.audio.transcriptions.create(
+        model=STT_MODEL, file=(filename, io.BytesIO(audio)), **kwargs
     )
     return (resp.text or "").strip()
 
 
 async def synthesize(text: str) -> bytes:
-    resp = await _openai.audio.speech.create(
-        model=TTS_MODEL,
-        voice=TTS_VOICE,
-        input=text[:TTS_MAX_CHARS],
-        response_format="opus",  # Telegram ovozli xabari OGG/Opus bo'lishi kerak
-    )
-    return resp.content
+    """Microsoft Edge TTS orqali MP3 (Telegram sendVoice MP3 ni qabul qiladi)."""
+    communicate = edge_tts.Communicate(text[:TTS_MAX_CHARS], voice=TTS_VOICE)
+    buf = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buf.extend(chunk["data"])
+    if not buf:
+        raise RuntimeError("Edge TTS bo'sh audio qaytardi")
+    return bytes(buf)
 
 
 async def ask_claude(chat_id: int, user_text: str) -> str:
     history = _history[chat_id]
     today = datetime.now(TZ).strftime("%Y-%m-%d")
-    messages = list(history) + [{"role": "user", "content": user_text}]
-
-    response = await _claude.beta.messages.create(
+    params = dict(
         model=CLAUDE_MODEL,
         max_tokens=16000,
         system=f"{SYSTEM_PROMPT}\n\nBugungi sana: {today}.",
-        messages=messages,
+        messages=list(history) + [{"role": "user", "content": user_text}],
         output_config={"effort": CLAUDE_EFFORT},
-        # Xavfsizlik filtri so'rovni rad etsa, server avtomatik boshqa modelda qayta urinadi
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
     )
+    if CLAUDE_MODEL in FALLBACK_MODELS:
+        # Xavfsizlik filtri so'rovni rad etsa, server avtomatik boshqa modelda qayta urinadi
+        response = await _claude.beta.messages.create(
+            **params, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
+        )
+    else:
+        response = await _claude.messages.create(**params)
 
     if response.stop_reason == "refusal":
         return "Kechirasiz, bu so'rovga javob bera olmayman."
@@ -132,19 +142,19 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
         try:
             await context.bot.send_chat_action(chat_id, ChatAction.RECORD_VOICE)
             audio = await synthesize(answer)
-            await msg.reply_voice(voice=audio)
+            await msg.reply_voice(voice=InputFile(audio, filename="javob.mp3"))
         except Exception as e:
             log.warning("Ovoz yaratilmadi: %s", e)
 
 
 def register(app: Application, admin_ids: set[int]) -> None:
     """Yordamchi handlerlarini botga ulaydi."""
-    global _claude, _openai
+    global _claude, _groq
     if not enabled():
-        log.warning("Ovozli yordamchi o'chiq: ANTHROPIC_API_KEY va OPENAI_API_KEY kerak.")
+        log.warning("Ovozli yordamchi o'chiq: ANTHROPIC_API_KEY va GROQ_API_KEY kerak.")
         return
     _claude = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    _groq = AsyncOpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL)
 
     async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _allowed(update, admin_ids):
