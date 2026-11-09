@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import assistant
 import db
 from birthdays import (
     age_on, days_until, format_date, next_birthday, parse_employee_line,
@@ -64,6 +65,11 @@ HELP = (
     "/subscribe — shu guruhga tabriklar yuborish\n"
     "/unsubscribe — shu guruhni o'chirish\n"
     "/check — tekshiruvni hozir ishga tushirish\n\n"
+    "<b>🎙 Ovozli yordamchi:</b>\n"
+    "Shaxsiy chatda istalgan savolni ovozli yoki matnli xabar qilib yuboring — "
+    "bot matn va ovoz bilan javob beradi. Guruhda botning xabariga ovozli javob qiling.\n"
+    "/ask savol — matnli savol\n"
+    "/reset — suhbat tarixini tozalash\n\n"
     "Har kuni soat {time} da tekshiriladi. Oldindan eslatmalar ({days} kun oldin) "
     "adminlarga shaxsiy xabarda, tabriklar esa guruhga yuboriladi."
 )
@@ -298,6 +304,7 @@ def main() -> None:
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
+    assistant.register(app, ADMIN_IDS)
 
     hh, mm = (int(x) for x in NOTIFY_TIME.split(":"))
     app.job_queue.run_daily(daily_job, time=time(hh, mm, tzinfo=TZ), name="daily_birthdays")

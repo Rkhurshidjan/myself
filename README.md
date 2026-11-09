@@ -28,6 +28,30 @@ Malika Karimova 02.11
 
 29-fevralda tug'ilganlar kabisa bo'lmagan yillarda 28-fevralda tabriklanadi.
 
+## 🎙 Ovozli yordamchi
+
+Umumiy savol-javob yordamchisi: ovozli xabar → OpenAI Whisper matnga aylantiradi → Claude javob beradi → OpenAI TTS javobni ovozga aylantiradi. Bot aniqlangan matnni, javob matnini va ovozli javobni yuboradi.
+
+- **Shaxsiy chatda:** istalgan ovozli yoki matnli xabar (matnga faqat matn bilan javob beradi).
+- **Guruhda:** faqat botning xabariga *reply* qilingan ovozli xabarlar yoki `/ask savol`.
+- `/reset` — suhbat tarixini tozalash. Bot har chat bo'yicha oxirgi 10 ta savol-javobni eslab qoladi (qayta ishga tushganda tarix o'chadi).
+- Yoqish uchun `ANTHROPIC_API_KEY` va `OPENAI_API_KEY` kerak. Ulardan biri bo'lmasa, yordamchi o'chiq turadi, tug'ilgan kun qismi ishlayveradi.
+- Xarajatni nazorat qilish uchun standart holatda faqat `ADMIN_IDS` dagilar foydalana oladi. Boshqalarga ruxsat: `ASSISTANT_USERS=111,222` yoki hamma uchun `ASSISTANT_USERS=*`.
+- Claude xavfsizlik filtri so'rovni rad etsa, server avtomatik zaxira modelda qayta urinadi (`fallbacks: "default"`).
+
+| O'zgaruvchi | Standart | Tavsif |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | [console.anthropic.com](https://console.anthropic.com) |
+| `OPENAI_API_KEY` | — | [platform.openai.com](https://platform.openai.com/api-keys) |
+| `ASSISTANT_USERS` | (adminlar) | `*` yoki ID lar |
+| `CLAUDE_MODEL` | `claude-opus-5-5` | Claude modeli |
+| `CLAUDE_EFFORT` | `low` | `low`/`medium`/`high` — yuqorisi aqlliroq, lekin sekin va qimmat |
+| `TTS_VOICE` | `alloy` | `alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer` |
+| `TTS_MODEL` | `gpt-4o-mini-tts` | Ovoz modeli |
+| `STT_MODEL` | `whisper-1` | Nutqni tanish modeli |
+| `VOICE_REPLY` | `1` | `0` — faqat matnli javob |
+| `HISTORY_TURNS` | `10` | Eslab qolinadigan savol-javoblar soni |
+
 ## Muhit o'zgaruvchilari
 
 | O'zgaruvchi | Majburiy | Standart | Tavsif |
